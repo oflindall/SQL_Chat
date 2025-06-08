@@ -6,7 +6,7 @@ import re
 class ChatAgent:
     def __init__(self):
         self.llm = ChatOllama(model="qwen2.5-coder:7b", temperature=0)
-        self.mistral_llm = ChatOllama(model="gemma:2b-instruct", temperature=0)
+        self.mistral_llm = ChatOllama(model="llama3.2:3b", temperature=0)
 
     def _parse_llm_response(self, result):
         if isinstance(result, dict) and "text" in result:
@@ -163,3 +163,31 @@ STRICT RULES:
         cursor.close()
         conn.close()
         return columns, rows
+    
+    def generate_final_response(self, user_question, vector_results=None, sql_results=None, model="qwen"):
+        prompt = f"""You are a helpful assistant. Use the results of a product search to answer the user's question clearly and naturally.
+
+        User Question:
+        \"\"\"{user_question}\"\"\"
+
+        Vector Search Results:
+        {self._format_results(vector_results) if vector_results else "None"}
+
+        SQL Results:
+        {self._format_results(sql_results) if sql_results else "None"}
+
+        Respond with a helpful, concise summary based on these results."""
+            
+        return self.call_llm(prompt=prompt, model=model)
+    
+    def _format_results(self, results):
+        if not results or len(results) != 2:
+            return "No results."
+        
+        columns, rows = results
+        formatted = []
+        for row in rows:
+            formatted.append(", ".join(f"{col}: {val}" for col, val in zip(columns, row)))
+        return "\n".join(formatted[:5])  # Limit to top 5 rows
+
+

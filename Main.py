@@ -18,16 +18,6 @@ def execute_sql_query(conn_str, sql_query):
 def clean_sql_query(raw_sql):
     return re.sub(r"```(?:sql)?|```", "", raw_sql).strip()
 
-def print_table(columns, rows):
-    print(" Results:\n" + "-" * 60)
-    if not rows:
-        print("No results found.")
-    else:
-        print("\t".join(columns))
-        for row in rows:
-            print("\t".join(str(c) for c in row))
-    print("-" * 60 + "\n")
-
 def main():
     conn_str = (
         r"Driver={ODBC Driver 18 for SQL Server};"
@@ -83,7 +73,16 @@ def main():
                 print(" Running VECTOR search...\n")
                 columns, rows = chat_agent.run_vector_search(db, user_input)
                 chat_history.add_assistant_message(f"Vector search results:\n{rows}")
-                print_table(columns, rows)
+
+                # Generate natural language summary
+                final_answer = chat_agent.generate_final_response(
+                    user_question=user_input,
+                    vector_results=(columns, rows),
+                    sql_results=None
+                )
+                print(" Natural language answer:\n" + "-" * 60)
+                print(final_answer)
+                print("-" * 60 + "\n")
                 continue
 
             print(" Agent 1 (Domain Expert) is analyzing your query...\n")
@@ -117,8 +116,21 @@ def main():
                 columns, rows = execute_sql_query(conn_str, sql_query)
                 chat_history.add_assistant_message(f"SQL Query:\n{sql_query}\nResults:\n{rows}")
 
+                # Natural language summary from SQL results only
+                final_answer = chat_agent.generate_final_response(
+                    user_question=user_input,
+                    vector_results=None,
+                    sql_results=(columns, rows)
+                )
+                print(" Natural language answer:\n" + "-" * 60)
+                print(final_answer)
+                print("-" * 60 + "\n")
+
             else:  # HYBRID
                 print(" Running HYBRID search...\n")
+                columns_vec, rows_vec = chat_agent.run_vector_search(db, user_input, top=1)
+                chat_history.add_assistant_message(f"Vector search results:\n{rows_vec}")
+
                 columns, rows = chat_agent.run_hybrid_search(
                     db=db,
                     user_question=user_input,
@@ -141,7 +153,15 @@ def main():
                     f"Hybrid SQL:\n{sql_query}\nResults:\n{rows}"
                 )
 
-            print_table(columns, rows)
+                # Generate combined natural language summary using both vector and SQL results
+                final_answer = chat_agent.generate_final_response(
+                    user_question=user_input,
+                    vector_results=(columns_vec, rows_vec),
+                    sql_results=(columns, rows)
+                )
+                print(" Natural language answer:\n" + "-" * 60)
+                print(final_answer)
+                print("-" * 60 + "\n")
 
         except KeyboardInterrupt:
             print("\nInterrupted by user. Exiting.")

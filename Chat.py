@@ -36,9 +36,9 @@ class ChatAgent:
         prompt = f"""You are a smart AI assistant that decides how to route user questions.
 
 Choose from exactly one of:
-- vector → for vague, descriptive, or suitability-based queries about products
-- sql → for precise, factual, or count-based queries from structured data
-- hybrid → when both types of understanding are needed and the results of vector are use din conjunction with precise sql.
+- **vector** → when the question is about suitability, recommendations, preferences, or product descriptions. No numeric filtering or factual data lookup is needed.
+- **sql** → when the question is about precise facts, numbers, IDs, prices, or structured data retrieval only.
+- **hybrid** → when a product needs to be found *based on meaning or suitability* **and** *further filtered by numeric or factual SQL logic* (like price or stock availability).
 
 User question:
 \"\"\"{user_question}\"\"\"

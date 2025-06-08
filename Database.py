@@ -141,7 +141,7 @@ class Database:
 
     def vector_search_products(self, prompt, stock=100, top=1):
         query = """
-            EXEC dbo.find_relevant_products_vector_search 
+            EXEC dbo.find_relevant_products_vector_search_oli 
                 @prompt = ?, 
                 @stock = ?, 
                 @top = ?;

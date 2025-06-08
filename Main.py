@@ -16,9 +16,11 @@ def execute_sql_query(conn_str, sql_query):
     return columns, rows
 
 def clean_sql_query(raw_sql):
+    # Remove ``` or ```sql code fences from raw SQL string
     return re.sub(r"```(?:sql)?|```", "", raw_sql).strip()
 
 def main():
+
     conn_str = (
         r"Driver={ODBC Driver 18 for SQL Server};"
         r"Server=NZXT\SQL2025;"
@@ -45,7 +47,7 @@ def main():
                 break
 
             if user_input == "/c":
-                print("\033[2J\033[H", end="")
+                print("\033[2J\033[H", end="")  # Clear screen
                 continue
 
             if user_input == "/ch":
@@ -62,7 +64,7 @@ def main():
                 continue
 
             chat_history.add_user_message(user_input)
-
+        
             print("\n Determining best search method...\n")
             search_method = chat_agent.decide_search_method(user_input)
             if search_method not in ("vector", "sql", "hybrid"):
@@ -74,7 +76,6 @@ def main():
                 columns, rows = chat_agent.run_vector_search(db, user_input)
                 chat_history.add_assistant_message(f"Vector search results:\n{rows}")
 
-                # Generate natural language summary
                 final_answer = chat_agent.generate_final_response(
                     user_question=user_input,
                     vector_results=(columns, rows),
@@ -86,7 +87,7 @@ def main():
                 continue
 
             print(" Agent 1 (Domain Expert) is analyzing your query...\n")
-            agent1_response, tables = chat_agent.run_agent1(db, user_input, chat_history.get_history())
+            agent1_response, tables = chat_agent.run_agent1(db, user_input, chat_history.get_history(), search_method=search_method)
 
             print(" Agent 1 Plan:\n" + "-" * 60)
             print(agent1_response)
@@ -100,23 +101,20 @@ def main():
 
             if search_method == "sql":
                 print(" Running SQL search for precise results...\n")
-                sql_query = chat_agent.run_agent2(
+                sql_query_raw = chat_agent.run_agent2(
                     db=db,
                     user_question=user_input,
                     agent1_plan=agent1_response,
                     selected_tables=tables,
                     chat_history=chat_history.get_history()
                 )
-                sql_query = clean_sql_query(sql_query)
+                print("Generated T-SQL Query (raw):\n" + sql_query_raw + "\n")
 
-                print(" Generated SQL Query:\n" + "-" * 60)
-                print(sql_query)
-                print("-" * 60 + "\n")
+                sql_query = clean_sql_query(sql_query_raw)
 
                 columns, rows = execute_sql_query(conn_str, sql_query)
                 chat_history.add_assistant_message(f"SQL Query:\n{sql_query}\nResults:\n{rows}")
 
-                # Natural language summary from SQL results only
                 final_answer = chat_agent.generate_final_response(
                     user_question=user_input,
                     vector_results=None,
@@ -128,10 +126,8 @@ def main():
 
             else:  # HYBRID
                 print(" Running HYBRID search...\n")
-                columns_vec, rows_vec = chat_agent.run_vector_search(db, user_input, top=1)
-                chat_history.add_assistant_message(f"Vector search results:\n{rows_vec}")
 
-                columns, rows = chat_agent.run_hybrid_search(
+                sql_query, columns, rows = chat_agent.run_hybrid_search(
                     db=db,
                     user_question=user_input,
                     agent1_plan=agent1_response,
@@ -139,26 +135,16 @@ def main():
                     chat_history=chat_history.get_history()
                 )
 
-                sql_query = chat_agent.run_agent2(
-                    db=db,
-                    user_question=user_input,
-                    agent1_plan=agent1_response,
-                    selected_tables=tables,
-                    product_ids_filter=None,
-                    chat_history=chat_history.get_history()
-                )
                 sql_query = clean_sql_query(sql_query)
 
-                chat_history.add_assistant_message(
-                    f"Hybrid SQL:\n{sql_query}\nResults:\n{rows}"
-                )
+                chat_history.add_assistant_message(f"Hybrid SQL Query:\n{sql_query}\nResults:\n{rows}")
 
-                # Generate combined natural language summary using both vector and SQL results
                 final_answer = chat_agent.generate_final_response(
                     user_question=user_input,
-                    vector_results=(columns_vec, rows_vec),
+                    vector_results=None,
                     sql_results=(columns, rows)
                 )
+
                 print(" Natural language answer:\n" + "-" * 60)
                 print(final_answer)
                 print("-" * 60 + "\n")

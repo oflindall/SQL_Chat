@@ -18,7 +18,7 @@ class ChatAgent:
         else:
             return str(result).strip()
 
-    def call_llm(self, prompt, user_input="", chat_history=None, model="qwen"):
+    def call_llm(self, prompt, user_input="", chat_history=None, model="llama3.2:3b"):
         messages = [("system", prompt)]
         if chat_history:
             for msg in chat_history:
@@ -33,21 +33,24 @@ class ChatAgent:
         return self._parse_llm_response(result)
 
     def decide_search_method(self, user_question, chat_history=None):
-        prompt = f"""You are an AI assistant that decides how to route user questions to the best search method.
+        prompt = f"""You are an AI assistant that selects the best method to answer a user’s question using the following options:
 
-    Choose exactly ONE method from:
-    - **vector**: When the question is about suitability, recommendations, preferences, or product descriptions. No numeric filtering or exact factual data retrieval is required.
-    - **sql**: When the question is about precise facts, numbers, IDs, prices, or structured data retrieval only.
-    - **hybrid**: When the question requires first finding products based on meaning or suitability (vector search) AND then applying precise numeric or factual filtering via SQL (e.g., price, stock availability, sales count).
+        - **vector**: Use ONLY if the question is subjective, preference-based, or asks for product recommendations, meaning, or similarity (e.g., "best shoes for hiking").
+        - **sql**: Use for all fact-based queries involving customers, sales, prices, IDs, quantities, dates, inventory, or performance metrics.
+        - **hybrid**: Use ONLY when the question mixes subjective/product-suitability filtering *and* factual constraints (e.g., "Which product with high traction sold the most last year?").
 
-    Example question that requires hybrid:
-    "How many sales does the best product for mountain biking have?"
+        Examples:
+        - "What's the total revenue by country?" → sql
+        - "Recommend a helmet for downhill biking" → vector
+        - "Which of the most suitable helmets had the highest sales?" → hybrid
 
-    User question:
-    \"\"\"{user_question}\"\"\"
+        User question:
+        \"\"\"{user_question}\"\"\"
 
-    Respond only with one word: vector, sql, or hybrid."""
-        return self.call_llm(prompt, user_input=user_question, chat_history=chat_history, model="mistral")
+        Reply with one word only: **sql**, **vector**, or **hybrid**."""
+
+        return self.call_llm(prompt, user_input=user_question, chat_history=chat_history, model="llama3.2:3b")
+
 
     def is_db_related(self, user_question):
         prompt = f"""You are an expert at determining if a question requires querying a structured SQL Server database.
@@ -59,69 +62,96 @@ User question:
         response = self.call_llm(prompt, user_input=user_question, model="mistral")
         return "yes" in response.lower()
 
-    def agent1_prompt(self, table_descriptions, user_question, chat_history):
+    def agent1_prompt(self, table_descriptions, user_question, chat_history, search_method="sql"):
+        method_desc = {
+            "vector": "Focus on tables relevant for semantic product suitability or recommendations.",
+            "sql": "Focus on tables for precise, fact-based data retrieval.",
+            "hybrid": (
+                "Combine tables for semantic product suitability AND tables for precise filtering or "
+                "numeric fact retrieval. Plan should address both aspects."
+            )
+        }
+
         return f"""
-You are an AI assistant that helps users query a SQL Server database. The tables, with descriptions, are:
+    You are an AI assistant helping users query a SQL Server database.
 
-{table_descriptions}
+    Tables available, with descriptions:
+    {table_descriptions}
 
-Today is {datetime.now():%Y-%m-%d}.
+    Today is {datetime.now():%Y-%m-%d}.
 
-Your job:
-- List relevant tables (max 5).
-- Explain what to do.
-- Do NOT generate SQL.
-- Focus on SELECT-only logic.
-- Be concise, formal, and break complex tasks into steps.
+    Search method: {search_method.upper()}
+    Instruction: {method_desc.get(search_method, 'Focus on relevant tables for the query.')}
 
-User question:
-{user_question}
-"""
+    Your job:
+    - List relevant tables (max 5).
+    - Explain your approach to combine semantic search and precise filtering if hybrid.
+    - Do NOT generate SQL.
+    - Focus on SELECT-only logic.
+    - Be concise, formal, and break complex tasks into steps.
+
+    User question:
+    {user_question}
+    """
+
 
     def agent2_prompt(self, detailed_schema, user_question, agent1_plan=None, selected_tables=None, product_ids_filter=None):
         product_clause = ""
         if product_ids_filter:
             product_clause = f"""
-- Use WHERE ProductID IN ({product_ids_filter}) if relevant.
-- If ProductID is in another table, adapt accordingly."""
+    STRICT REQUIREMENT:
+
+    You MUST use the following ProductID list to filter results:
+
+    WHERE ProductID IN ({product_ids_filter})
+    -- DO NOT use LIKE, Name, or Category filters instead.
+
+
+    - This clause MUST appear in the final SQL.
+    - DO NOT replace this with any other filter (e.g., LIKE, descriptions, or category).
+    - DO NOT skip, modify, or ignore this clause.
+    - Failure to include it = INVALID SQL.
+    """
 
         return f"""
-You are a senior T-SQL expert. Write a single valid **SQL Server SELECT** query using only the provided schema.
+    You are a senior T-SQL expert. Write one valid **SQL Server SELECT** query using only the provided schema and requirements.
 
-Schema:
-{detailed_schema}
+    Schema:
+    {detailed_schema}
 
-Plan from domain expert:
-{agent1_plan}
+    Plan from domain expert:
+    {agent1_plan}
 
-User question:
-{user_question}
-{product_clause}
+    User question:
+    {user_question}
 
-STRICT RULES:
-- NO comments, markdown, aliases for unknown columns.
-- ONLY use column names explicitly shown.
-- JOIN only when necessary.
-- Use T-SQL syntax.
-"""
+    {product_clause}
+
+    ADDITIONAL RULES:
+    - Use ONLY the columns and tables from the schema above.
+    - Use JOINs only when needed.
+    - Use standard T-SQL syntax.
+    - NO comments, no placeholders.
+    - Output ONLY the query.
+    """
 
     def run_vector_search(self, db, user_question, top=1, stock=100):
-        conn = db.get_connection()
-        cursor = conn.cursor()
-        sql = "EXEC dbo.find_relevant_products_vector_search @prompt=?, @stock=?, @top=?"
-        cursor.execute(sql, (user_question, stock, top))
-        columns = [desc[0] for desc in cursor.description]
-        rows = cursor.fetchall()
-        cursor.close()
-        conn.close()
+        results = db.vector_search_products(prompt=user_question, stock=stock, top=top)
+        if not results:
+            return [], []
+
+        columns = list(results[0].keys())
+        rows = [tuple(row[col] for col in columns) for row in results]
         return columns, rows
 
-    def run_agent1(self, db, user_question, chat_history):
+
+    def run_agent1(self, db, user_question, chat_history, search_method="sql"):
         table_desc = db.fetch_table_descriptions()
-        prompt = self.agent1_prompt(table_desc, user_question, chat_history)  # <-- pass chat_history here
+        prompt = self.agent1_prompt(table_desc, user_question, chat_history, search_method)
         response = self.call_llm(prompt, user_input=user_question, chat_history=chat_history)
         tables = re.findall(r"\[?([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\]?", response)
         return response, list(set(tables))
+
 
 
     def run_agent2(self, db, user_question, agent1_plan, selected_tables, product_ids_filter=None, chat_history=None):
@@ -141,6 +171,16 @@ STRICT RULES:
 
     def run_hybrid_search(self, db, user_question, agent1_plan, selected_tables, chat_history=None):
         columns_vec, rows_vec = self.run_vector_search(db, user_question, top=1)
+
+        # Print vector search results before proceeding to SQL
+        print("Vector Search Results:")
+        print("-" * 60)
+        if not rows_vec:
+            print("No results found from vector search.")
+        else:
+            for row in rows_vec[:1]:  # Show top 5 results for brevity
+                print(", ".join(f"{col}: {val}" for col, val in zip(columns_vec, row)))
+        print("-" * 60 + "\n")
         product_ids_str = ""
         try:
             productid_index = columns_vec.index("ProductID")
@@ -158,6 +198,9 @@ STRICT RULES:
             chat_history=chat_history
         )
 
+        print("Generated SQL Query (HYBRID):")
+        print(sql_query)
+
         conn = db.get_connection()
         cursor = conn.cursor()
         cursor.execute(sql_query)
@@ -165,7 +208,11 @@ STRICT RULES:
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
-        return columns, rows
+
+        return sql_query, columns, rows
+
+
+
     
     def generate_final_response(self, user_question, vector_results=None, sql_results=None, model="qwen"):
         prompt = f"""You are a helpful assistant. Use the results of a product search to answer the user's question clearly and naturally.

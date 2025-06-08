@@ -33,17 +33,20 @@ class ChatAgent:
         return self._parse_llm_response(result)
 
     def decide_search_method(self, user_question, chat_history=None):
-        prompt = f"""You are a smart AI assistant that decides how to route user questions.
+        prompt = f"""You are an AI assistant that decides how to route user questions to the best search method.
 
-Choose from exactly one of:
-- **vector** → when the question is about suitability, recommendations, preferences, or product descriptions. No numeric filtering or factual data lookup is needed.
-- **sql** → when the question is about precise facts, numbers, IDs, prices, or structured data retrieval only.
-- **hybrid** → when a product needs to be found *based on meaning or suitability* **and** *further filtered by numeric or factual SQL logic* (like price or stock availability).
+    Choose exactly ONE method from:
+    - **vector**: When the question is about suitability, recommendations, preferences, or product descriptions. No numeric filtering or exact factual data retrieval is required.
+    - **sql**: When the question is about precise facts, numbers, IDs, prices, or structured data retrieval only.
+    - **hybrid**: When the question requires first finding products based on meaning or suitability (vector search) AND then applying precise numeric or factual filtering via SQL (e.g., price, stock availability, sales count).
 
-User question:
-\"\"\"{user_question}\"\"\"
+    Example question that requires hybrid:
+    "How many sales does the best product for mountain biking have?"
 
-Reply only with one of: vector, sql, hybrid."""
+    User question:
+    \"\"\"{user_question}\"\"\"
+
+    Respond only with one word: vector, sql, or hybrid."""
         return self.call_llm(prompt, user_input=user_question, chat_history=chat_history, model="mistral")
 
     def is_db_related(self, user_question):

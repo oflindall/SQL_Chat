@@ -1,9 +1,9 @@
 import sys
 import re
+import pyodbc
 from Database import Database
 from Chat import ChatAgent
 from Chat_History import ChatHistory
-import pyodbc
 
 def execute_sql_query(conn_str, sql_query):
     conn = pyodbc.connect(conn_str, autocommit=True)
@@ -17,6 +17,16 @@ def execute_sql_query(conn_str, sql_query):
 
 def clean_sql_query(raw_sql):
     return re.sub(r"```(?:sql)?|```", "", raw_sql).strip()
+
+def print_table(columns, rows):
+    print(" Results:\n" + "-" * 60)
+    if not rows:
+        print("No results found.")
+    else:
+        print("\t".join(columns))
+        for row in rows:
+            print("\t".join(str(c) for c in row))
+    print("-" * 60 + "\n")
 
 def main():
     conn_str = (
@@ -62,40 +72,22 @@ def main():
                 continue
 
             chat_history.add_user_message(user_input)
-            
-            # # Check if question requires DB query
-            # if not chat_agent.is_db_related(user_input):
-            #     general_response = chat_agent.call_llm(
-            #         f"I have reasoned this question isn't related to the database. However generate a response.\n\n{user_input}"
-            #     )
-            #     print("\n[Non-database question]\n")
-            #     print(general_response)
-            #     chat_history.add_assistant_message(f"General answer:\n{general_response}")
-            #     continue
 
-
-            # Decide search method
             print("\n Determining best search method...\n")
             search_method = chat_agent.decide_search_method(user_input)
             if search_method not in ("vector", "sql", "hybrid"):
                 search_method = "sql"
-
             print(" LLM has chosen the search method:", search_method.upper(), "\n")
 
             if search_method == "vector":
                 print(" Running VECTOR search...\n")
                 columns, rows = chat_agent.run_vector_search(db, user_input)
                 chat_history.add_assistant_message(f"Vector search results:\n{rows}")
-                print(" Results:\n" + "-" * 60)
-                print("\t".join(columns))
-                for row in rows:
-                    print("\t".join(str(c) for c in row))
-                print("-" * 60 + "\n")
+                print_table(columns, rows)
                 continue
 
-            # Run Agent 1
             print(" Agent 1 (Domain Expert) is analyzing your query...\n")
-            agent1_response, tables = chat_agent.run_agent1(db, user_input)
+            agent1_response, tables = chat_agent.run_agent1(db, user_input, chat_history.get_history())
 
             print(" Agent 1 Plan:\n" + "-" * 60)
             print(agent1_response)
@@ -105,7 +97,7 @@ def main():
                 print("Agent 1 could not identify relevant tables.")
                 continue
 
-            print("  Tables selected by Agent 1:", ", ".join(tables) + "\n")
+            print(" Tables selected by Agent 1:", ", ".join(tables) + "\n")
 
             if search_method == "sql":
                 print(" Running SQL search for precise results...\n")
@@ -113,7 +105,8 @@ def main():
                     db=db,
                     user_question=user_input,
                     agent1_plan=agent1_response,
-                    selected_tables=tables
+                    selected_tables=tables,
+                    chat_history=chat_history.get_history()
                 )
                 sql_query = clean_sql_query(sql_query)
 
@@ -126,32 +119,29 @@ def main():
 
             else:  # HYBRID
                 print(" Running HYBRID search...\n")
-                hybrid_result = chat_agent.run_hybrid_search(
+                columns, rows = chat_agent.run_hybrid_search(
                     db=db,
                     user_question=user_input,
                     agent1_plan=agent1_response,
-                    selected_tables=tables
+                    selected_tables=tables,
+                    chat_history=chat_history.get_history()
                 )
 
-                sql_query = clean_sql_query(hybrid_result["sql"])
-                print("\nCleaned SQL Query:\n" + "-" * 60)
-                print(sql_query)
-                print("-" * 60 + "\n")
-
-                columns, rows = execute_sql_query(conn_str, sql_query)
+                sql_query = chat_agent.run_agent2(
+                    db=db,
+                    user_question=user_input,
+                    agent1_plan=agent1_response,
+                    selected_tables=tables,
+                    product_ids_filter=None,
+                    chat_history=chat_history.get_history()
+                )
+                sql_query = clean_sql_query(sql_query)
 
                 chat_history.add_assistant_message(
-                    f"Hybrid search results:\nVector top 1:\n{hybrid_result['vector_rows'][:1]}\nSQL Query:\n{sql_query}\nResults:\n{rows}"
+                    f"Hybrid SQL:\n{sql_query}\nResults:\n{rows}"
                 )
 
-            print(" Results:\n" + "-" * 60)
-            if not rows:
-                print("No results found.")
-            else:
-                print("\t".join(columns))
-                for row in rows:
-                    print("\t".join(str(c) for c in row))
-            print("-" * 60 + "\n")
+            print_table(columns, rows)
 
         except KeyboardInterrupt:
             print("\nInterrupted by user. Exiting.")

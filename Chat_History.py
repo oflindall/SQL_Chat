@@ -11,6 +11,9 @@ class ChatHistory:
     def clear_history(self):
         self.messages = []
 
+    def get_history(self):
+        return self.messages
+
     def __iter__(self):
         return iter(self.messages)
 
